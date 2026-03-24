@@ -1,0 +1,119 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "Firebase Auth UID" },
+        "uniqueId": { "type": "string", "description": "Custom unique ID for connecting" },
+        "displayName": { "type": "string", "description": "Display name" },
+        "photoURL": { "type": "string", "description": "Profile picture URL" },
+        "bio": { "type": "string", "description": "User bio" },
+        "status": { "type": "string", "enum": ["online", "offline"], "description": "Current status" },
+        "lastSeen": { "type": "string", "format": "date-time", "description": "Last seen timestamp" }
+      },
+      "required": ["uid", "uniqueId", "displayName"]
+    },
+    "Chat": {
+      "title": "Chat",
+      "description": "A private chat between two users",
+      "type": "object",
+      "properties": {
+        "participants": { "type": "array", "items": { "type": "string" }, "description": "UIDs of participants" },
+        "participantIds": { "type": "array", "items": { "type": "string" }, "description": "Unique IDs of participants" },
+        "lastMessage": { "type": "string", "description": "Last message text" },
+        "lastTimestamp": { "type": "string", "format": "date-time", "description": "Last message timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+      },
+      "required": ["participants", "participantIds", "updatedAt"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "A single chat message",
+      "type": "object",
+      "properties": {
+        "chatId": { "type": "string", "description": "Parent chat ID" },
+        "from": { "type": "string", "description": "Sender UID" },
+        "to": { "type": "string", "description": "Recipient UID" },
+        "text": { "type": "string", "description": "Message text" },
+        "type": { "type": "string", "enum": ["text", "image", "document"], "description": "Message type" },
+        "image": { "type": "string", "description": "Image URL" },
+        "document": {
+          "type": "object",
+          "properties": {
+            "url": { "type": "string" },
+            "name": { "type": "string" },
+            "size": { "type": "number" },
+            "type": { "type": "string" }
+          }
+        },
+        "replyTo": { "type": "object", "description": "Replied message snapshot" },
+        "timestamp": { "type": "string", "format": "date-time", "description": "Message timestamp" },
+        "status": { "type": "string", "enum": ["sent", "delivered", "read"], "description": "Message status" }
+      },
+      "required": ["chatId", "from", "to", "type", "timestamp"]
+    },
+    "Block": {
+      "title": "Block",
+      "description": "User blocking relationship",
+      "type": "object",
+      "properties": {
+        "blocker": { "type": "string", "description": "UID of user who blocks" },
+        "blocked": { "type": "string", "description": "UID of user who is blocked" },
+        "timestamp": { "type": "string", "format": "date-time", "description": "Block timestamp" }
+      },
+      "required": ["blocker", "blocked", "timestamp"]
+    },
+    "ConnectionRequest": {
+      "title": "ConnectionRequest",
+      "description": "A request to connect and start a chat",
+      "type": "object",
+      "properties": {
+        "from": { "type": "string", "description": "Sender UID" },
+        "fromUniqueId": { "type": "string", "description": "Sender Unique ID" },
+        "fromDisplayName": { "type": "string", "description": "Sender Display Name" },
+        "to": { "type": "string", "description": "Recipient UID" },
+        "status": { "type": "string", "enum": ["pending", "accepted", "rejected"], "description": "Request status" },
+        "timestamp": { "type": "string", "format": "date-time", "description": "Request timestamp" }
+      },
+      "required": ["from", "to", "status", "timestamp"]
+    },
+    "Friend": {
+      "title": "Friend",
+      "description": "A friendship relationship",
+      "type": "object",
+      "properties": {
+        "uids": { "type": "array", "items": { "type": "string" }, "description": "UIDs of the two friends" },
+        "timestamp": { "type": "string", "format": "date-time", "description": "Friendship timestamp" }
+      },
+      "required": ["uids", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{uid}": {
+      "schema": "User",
+      "description": "User profiles"
+    },
+    "/chats/{chatId}": {
+      "schema": "Chat",
+      "description": "Chat metadata"
+    },
+    "/chats/{chatId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Messages within a chat"
+    },
+    "/blocks/{blockId}": {
+      "schema": "Block",
+      "description": "Blocking relationships"
+    },
+    "/connectionRequests/{requestId}": {
+      "schema": "ConnectionRequest",
+      "description": "Connection requests"
+    },
+    "/friends/{friendId}": {
+      "schema": "Friend",
+      "description": "Friendship relationships"
+    }
+  }
+}
