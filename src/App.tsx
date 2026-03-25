@@ -11,6 +11,7 @@ import { CallPage } from './components/Chat/CallPage';
 import { auth, db, logout } from './firebase';
 import { onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, updateDoc, serverTimestamp, getDocFromServer } from 'firebase/firestore';
+import { handleFirestoreError, OperationType } from './lib/firestore-errors';
 import { motion, AnimatePresence } from 'motion/react';
 import { Loader } from './components/UI/Loader';
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -186,10 +187,14 @@ function AppContent() {
           newSocket.emit('join', user.uid);
 
           // Update online status
-          await updateDoc(doc(db, 'users', user.uid), {
-            status: 'online',
-            lastSeen: serverTimestamp()
-          });
+          try {
+            await updateDoc(doc(db, 'users', user.uid), {
+              status: 'online',
+              lastSeen: serverTimestamp()
+            });
+          } catch (err) {
+            handleFirestoreError(err, OperationType.UPDATE, `users/${user.uid}`);
+          }
         }
       } else {
         setCurrentUser(null);
@@ -206,10 +211,14 @@ function AppContent() {
 
   const handleLogout = async () => {
     if (currentUser) {
-      await updateDoc(doc(db, 'users', currentUser.uid), {
-        status: 'offline',
-        lastSeen: serverTimestamp()
-      });
+      try {
+        await updateDoc(doc(db, 'users', currentUser.uid), {
+          status: 'offline',
+          lastSeen: serverTimestamp()
+        });
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `users/${currentUser.uid}`);
+      }
     }
     await logout();
     setCurrentUser(null);

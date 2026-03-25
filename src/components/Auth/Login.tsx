@@ -10,7 +10,8 @@ import {
   sendPasswordResetEmail,
   updateProfile
 } from '../../firebase';
-import { doc, setDoc, getDoc } from 'firebase/firestore';
+import { doc, setDoc, getDoc, serverTimestamp } from 'firebase/firestore';
+import { handleFirestoreError, OperationType } from '../../lib/firestore-errors';
 
 interface LoginProps {
   onLoginSuccess: (user: any) => void;
@@ -130,14 +131,15 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
         photoURL: user.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${user.uid}`,
         bio: 'Hey there! I am using WhatsApp Clone.',
         status: 'online',
-        lastSeen: new Date().toISOString()
+        lastSeen: serverTimestamp()
       };
 
-      await setDoc(doc(db, 'users', user.uid), userData);
+      await setDoc(doc(db, 'users', user.uid), userData, { merge: true });
       onLoginSuccess(userData);
     } catch (err: any) {
       setError(err.message || 'Failed to complete setup');
       console.error(err);
+      handleFirestoreError(err, OperationType.WRITE, `users/${auth.currentUser?.uid}`);
     } finally {
       setLoading(false);
     }
