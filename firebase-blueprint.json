@@ -37,8 +37,10 @@
         "from": { "type": "string", "description": "Sender UID" },
         "to": { "type": "string", "description": "Recipient UID" },
         "text": { "type": "string", "description": "Message text" },
-        "type": { "type": "string", "enum": ["text", "image", "document"], "description": "Message type" },
+        "type": { "type": "string", "enum": ["text", "image", "document", "video", "audio"], "description": "Message type" },
         "image": { "type": "string", "description": "Image URL" },
+        "video": { "type": "string", "description": "Video URL" },
+        "audio": { "type": "string", "description": "Audio URL" },
         "document": {
           "type": "object",
           "properties": {
@@ -88,6 +90,32 @@
         "timestamp": { "type": "string", "format": "date-time", "description": "Friendship timestamp" }
       },
       "required": ["uids", "timestamp"]
+    },
+    "SharedDocument": {
+      "title": "SharedDocument",
+      "description": "A document shared via a code",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string", "description": "UID of the uploader" },
+        "fileURL": { "type": "string", "description": "Storage URL of the file" },
+        "accessCode": { "type": "string", "description": "Unique code to access the document" },
+        "fileName": { "type": "string", "description": "Original file name" },
+        "fileSize": { "type": "number", "description": "File size in bytes" },
+        "mimeType": { "type": "string", "description": "File MIME type" },
+        "uploadTime": { "type": "string", "format": "date-time", "description": "Upload timestamp" }
+      },
+      "required": ["ownerId", "fileURL", "accessCode", "fileName", "fileSize", "uploadTime"]
+    },
+    "UserDocumentAccess": {
+      "title": "UserDocumentAccess",
+      "description": "Tracks which users have access to which shared documents",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "UID of the user with access" },
+        "documentId": { "type": "string", "description": "ID of the shared document" },
+        "accessTime": { "type": "string", "format": "date-time", "description": "When the user accessed the document" }
+      },
+      "required": ["userId", "documentId", "accessTime"]
     }
   },
   "firestore": {
@@ -114,6 +142,14 @@
     "/friends/{friendId}": {
       "schema": "Friend",
       "description": "Friendship relationships"
+    },
+    "/sharedDocuments/{documentId}": {
+      "schema": "SharedDocument",
+      "description": "Metadata for shared documents"
+    },
+    "/userDocumentAccess/{accessId}": {
+      "schema": "UserDocumentAccess",
+      "description": "User access records for shared documents"
     }
   }
 }

@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Send, Download, Image as ImageIcon, Loader2, ArrowLeft, Trash2, Sparkles, Bot, User, Smile, Paperclip, X, FileText } from 'lucide-react';
+import { Send, Download, Image as ImageIcon, Loader2, ArrowLeft, Trash2, Sparkles, Bot, User, Smile, Paperclip, X, FileText, Mic } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 import ReactMarkdown from 'react-markdown';
-import EmojiPicker, { Theme } from 'emoji-picker-react';
+import { CustomEmojiPicker } from '../Chat/CustomEmojiPicker';
+import { isOnlyEmojis, getEmojis, AnimatedEmoji, triggerEmojiEffect } from '../Chat/EmojiEffects';
 
 interface AIChatProps {
   onBack: () => void;
@@ -12,7 +13,7 @@ interface AIChatProps {
 interface ChatMessage {
   id: string;
   role: 'user' | 'ai';
-  type: 'text' | 'image';
+  type: 'text' | 'image' | 'audio';
   content: string;
   timestamp: Date;
 }
@@ -25,9 +26,29 @@ export const AIChat: React.FC<AIChatProps> = ({ onBack }) => {
   const [showAttachmentMenu, setShowAttachmentMenu] = useState(false);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
   const [documentPreview, setDocumentPreview] = useState<{ url: string; name: string; size: number; type: string } | null>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const [audioPreview, setAudioPreview] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const docInputRef = useRef<HTMLInputElement>(null);
+  const lastMessageIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (messages.length > 0) {
+      const lastMsg = messages[messages.length - 1];
+      if (lastMsg.id !== lastMessageIdRef.current) {
+        lastMessageIdRef.current = lastMsg.id;
+        if (lastMsg.type === 'text' && isOnlyEmojis(lastMsg.content)) {
+          const emojis = getEmojis(lastMsg.content);
+          if (emojis.length === 1) {
+            triggerEmojiEffect(emojis[0]);
+          }
+        }
+      }
+    }
+  }, [messages]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -36,13 +57,13 @@ export const AIChat: React.FC<AIChatProps> = ({ onBack }) => {
   }, [messages, isLoading]);
 
   const handleSend = async () => {
-    if ((!input.trim() && !imagePreview && !documentPreview) || isLoading) return;
+    if ((!input.trim() && !imagePreview && !documentPreview && !audioPreview) || isLoading) return;
 
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
       role: 'user',
-      type: imagePreview ? 'image' : 'text',
-      content: imagePreview || input,
+      type: imagePreview ? 'image' : (audioPreview ? 'audio' : 'text'),
+      content: imagePreview || audioPreview || input,
       timestamp: new Date(),
     };
 
@@ -50,17 +71,19 @@ export const AIChat: React.FC<AIChatProps> = ({ onBack }) => {
     const currentInput = input;
     const currentImage = imagePreview;
     const currentDoc = documentPreview;
+    const currentAudio = audioPreview;
     
     setInput('');
     setImagePreview(null);
     setDocumentPreview(null);
+    setAudioPreview(null);
     setIsLoading(true);
 
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       
       if (currentImage) {
-        // Multimodal request
+        // Multimodal request (Image)
         const base64Data = currentImage.split(',')[1];
         const response = await ai.models.generateContent({
           model: 'gemini-3-flash-preview',
@@ -80,6 +103,30 @@ export const AIChat: React.FC<AIChatProps> = ({ onBack }) => {
           role: 'ai',
           type: 'text',
           content: response.text || "I've received your image.",
+          timestamp: new Date(),
+        };
+        setMessages(prev => [...prev, aiMessage]);
+      } else if (currentAudio) {
+        // Multimodal request (Audio)
+        const base64Data = currentAudio.split(',')[1];
+        const response = await ai.models.generateContent({
+          model: 'gemini-3-flash-preview',
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { inlineData: { data: base64Data, mimeType: 'audio/webm' } },
+                { text: currentInput || "Please transcribe and respond to this audio." }
+              ]
+            }
+          ]
+        });
+
+        const aiMessage: ChatMessage = {
+          id: (Date.now() + 1).toString(),
+          role: 'ai',
+          type: 'text',
+          content: response.text || "I've received your voice message.",
           timestamp: new Date(),
         };
         setMessages(prev => [...prev, aiMessage]);
@@ -184,6 +231,7 @@ export const AIChat: React.FC<AIChatProps> = ({ onBack }) => {
       reader.onload = (event) => {
         setImagePreview(event.target?.result as string);
         setDocumentPreview(null);
+        setAudioPreview(null);
         setShowAttachmentMenu(false);
       };
       reader.readAsDataURL(file);
@@ -202,14 +250,55 @@ export const AIChat: React.FC<AIChatProps> = ({ onBack }) => {
           type: file.type
         });
         setImagePreview(null);
+        setAudioPreview(null);
         setShowAttachmentMenu(false);
       };
       reader.readAsDataURL(file);
     }
   };
 
-  const onEmojiClick = (emojiData: any) => {
-    setInput(prev => prev + emojiData.emoji);
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' });
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          setAudioPreview(reader.result as string);
+          setImagePreview(null);
+          setDocumentPreview(null);
+        };
+        reader.readAsDataURL(audioBlob);
+        stream.getTracks().forEach(track => track.stop());
+      };
+
+      mediaRecorder.start();
+      setIsRecording(true);
+    } catch (err) {
+      console.error('Error accessing microphone:', err);
+      alert('Could not access microphone. Please check your permissions.');
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorderRef.current && isRecording) {
+      mediaRecorderRef.current.stop();
+      setIsRecording(false);
+    }
+  };
+
+  const onEmojiClick = (emoji: string) => {
+    setInput(prev => prev + emoji);
   };
 
   const handleDownload = (url: string) => {
@@ -306,7 +395,7 @@ export const AIChat: React.FC<AIChatProps> = ({ onBack }) => {
                 msg.role === 'user' 
                   ? 'bg-[#dcf8c6] text-gray-800 rounded-tr-none' 
                   : 'bg-white text-gray-800 rounded-tl-none'
-              }`}>
+              } ${msg.type === 'text' && isOnlyEmojis(msg.content) && getEmojis(msg.content).length <= 3 ? '!bg-transparent !shadow-none' : ''}`}>
                 {msg.type === 'image' ? (
                   <div className="space-y-2">
                     <div className="relative group">
@@ -324,12 +413,27 @@ export const AIChat: React.FC<AIChatProps> = ({ onBack }) => {
                       </button>
                     </div>
                   </div>
+                ) : msg.type === 'audio' ? (
+                  <div className="p-2 bg-black/5 rounded-lg flex items-center gap-2 min-w-[200px]">
+                    <div className="w-8 h-8 bg-[#00a884] rounded-full flex items-center justify-center text-white shrink-0">
+                      <Mic size={16} />
+                    </div>
+                    <audio src={msg.content} controls className="h-8 flex-1" />
+                  </div>
                 ) : (
-                  <div className="text-sm markdown-body prose prose-sm max-w-none">
-                    <ReactMarkdown>{msg.content}</ReactMarkdown>
+                  <div className={`break-words ${isOnlyEmojis(msg.content) ? 'py-2' : 'text-sm markdown-body prose prose-sm max-w-none'}`}>
+                    {isOnlyEmojis(msg.content) ? (
+                      <div className="flex flex-wrap gap-1">
+                        {getEmojis(msg.content).map((e, i) => (
+                          <AnimatedEmoji key={i} emoji={e} isBig={getEmojis(msg.content).length <= 3} />
+                        ))}
+                      </div>
+                    ) : (
+                      <ReactMarkdown>{msg.content}</ReactMarkdown>
+                    )}
                   </div>
                 )}
-                <div className="flex justify-end mt-1">
+                <div className={`flex justify-end mt-1 ${msg.type === 'text' && isOnlyEmojis(msg.content) && getEmojis(msg.content).length <= 3 ? 'opacity-70 bg-white/40 px-1 rounded-full' : ''}`}>
                   <span className="text-[10px] text-gray-400 font-bold uppercase">
                     {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </span>
@@ -354,7 +458,7 @@ export const AIChat: React.FC<AIChatProps> = ({ onBack }) => {
       </div>
 
       {/* Input Area */}
-      <div className="bg-[#f0f2f5] p-4 border-t border-gray-200 relative">
+      <div className="bg-[#f0f2f5] p-4 pb-12 md:pb-4 border-t border-gray-200 relative">
         <AnimatePresence>
           {showEmojiPicker && (
             <motion.div
@@ -363,12 +467,7 @@ export const AIChat: React.FC<AIChatProps> = ({ onBack }) => {
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
               className="absolute bottom-full left-4 mb-2 z-50 shadow-2xl"
             >
-              <EmojiPicker 
-                onEmojiClick={onEmojiClick} 
-                theme={Theme.LIGHT}
-                width={320}
-                height={400}
-              />
+              <CustomEmojiPicker onEmojiClick={onEmojiClick} />
             </motion.div>
           )}
 
@@ -383,6 +482,32 @@ export const AIChat: React.FC<AIChatProps> = ({ onBack }) => {
                 <img src={imagePreview} alt="Preview" className="max-h-48 rounded-lg object-contain mx-auto" />
                 <button onClick={() => setImagePreview(null)} className="absolute top-2 right-2 p-2 bg-black/50 text-white rounded-full">
                   <X size={20} />
+                </button>
+              </div>
+            </motion.div>
+          )}
+
+          {audioPreview && (
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.9 }}
+              className="bg-white p-4 rounded-xl flex flex-col gap-3 shadow-lg mb-4 max-w-md mx-auto"
+            >
+              <div className="flex items-center gap-4 p-4 bg-gray-50 rounded-lg border border-gray-100">
+                <div className="w-12 h-12 bg-[#00a884] rounded flex items-center justify-center text-white">
+                  <Mic size={32} />
+                </div>
+                <div className="flex-1">
+                  <audio src={audioPreview} controls className="w-full h-8" />
+                </div>
+                <button onClick={() => setAudioPreview(null)} className="p-2 hover:bg-gray-200 rounded-full text-gray-400">
+                  <X size={20} />
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <button onClick={handleSend} className="w-full py-3 bg-[#00a884] text-white rounded-lg font-bold shadow-md flex items-center justify-center gap-2">
+                  <Send size={20} /> Send Voice to AI
                 </button>
               </div>
             </motion.div>
@@ -485,15 +610,23 @@ export const AIChat: React.FC<AIChatProps> = ({ onBack }) => {
             />
           </div>
           <button 
-            onClick={handleSend}
-            disabled={(!input.trim() && !imagePreview && !documentPreview) || isLoading}
+            onMouseDown={input.trim() || imagePreview || documentPreview || audioPreview ? undefined : startRecording}
+            onMouseUp={input.trim() || imagePreview || documentPreview || audioPreview ? undefined : stopRecording}
+            onTouchStart={input.trim() || imagePreview || documentPreview || audioPreview ? undefined : startRecording}
+            onTouchEnd={input.trim() || imagePreview || documentPreview || audioPreview ? undefined : stopRecording}
+            onClick={() => {
+              if (input.trim() || imagePreview || documentPreview || audioPreview) {
+                handleSend();
+              }
+            }}
+            disabled={isLoading}
             className={`p-4 rounded-2xl shadow-md transition-all ${
-              (!input.trim() && !imagePreview && !documentPreview) || isLoading 
+              isLoading 
                 ? 'bg-gray-300 text-gray-500 cursor-not-allowed' 
-                : 'bg-[#00a884] text-white hover:bg-[#008f6f] active:scale-95'
+                : (isRecording ? 'bg-red-500 text-white animate-pulse scale-110' : 'bg-[#00a884] text-white hover:bg-[#008f6f] active:scale-95')
             }`}
           >
-            {isLoading ? <Loader2 size={24} className="animate-spin" /> : <Send size={24} />}
+            {isLoading ? <Loader2 size={24} className="animate-spin" /> : (input.trim() || imagePreview || documentPreview || audioPreview ? <Send size={24} /> : <Mic size={24} />)}
           </button>
         </div>
       </div>

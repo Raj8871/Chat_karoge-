@@ -40,6 +40,53 @@ async function startServer() {
       socket.to(data.to).emit("new_message", data);
     });
 
+    // WebRTC Signaling for Audio Calls
+    socket.on("call_user", (data: { to: string; from: string; callerName: string; signal: any }) => {
+      console.log(`Call from ${data.from} to ${data.to}`);
+      socket.to(data.to).emit("incoming_call", { from: data.from, callerName: data.callerName, signal: data.signal });
+    });
+
+    socket.on("answer_call", (data: { to: string; signal: any }) => {
+      console.log(`Answering call to ${data.to}`);
+      socket.to(data.to).emit("call_accepted", { signal: data.signal });
+    });
+
+    socket.on("reject_call", (data: { to: string }) => {
+      console.log(`Rejecting call to ${data.to}`);
+      socket.to(data.to).emit("call_rejected");
+    });
+
+    socket.on("end_call", (data: { to: string }) => {
+      console.log(`Ending call to ${data.to}`);
+      socket.to(data.to).emit("call_ended");
+    });
+
+    socket.on("ice_candidate", (data: { to: string; candidate: any }) => {
+      socket.to(data.to).emit("ice_candidate", { candidate: data.candidate });
+    });
+
+    // Room-based signaling for Call Page
+    socket.on("join_call_room", (roomId: string) => {
+      socket.join(roomId);
+      console.log(`User ${socket.id} joined call room: ${roomId}`);
+      // Notify others in the room that a new user joined
+      socket.to(roomId).emit("user_joined_room", { socketId: socket.id });
+    });
+
+    socket.on("leave_call_room", (roomId: string) => {
+      socket.leave(roomId);
+      console.log(`User ${socket.id} left call room: ${roomId}`);
+      socket.to(roomId).emit("user_left_room", { socketId: socket.id });
+    });
+
+    socket.on("room_signal", (data: { roomId: string; signal: any; from: string }) => {
+      socket.to(data.roomId).emit("room_signal", { signal: data.signal, from: data.from });
+    });
+
+    socket.on("room_ice_candidate", (data: { roomId: string; candidate: any }) => {
+      socket.to(data.roomId).emit("room_ice_candidate", { candidate: data.candidate });
+    });
+
     socket.on("disconnect", () => {
       const userId = onlineUsers.get(socket.id);
       if (userId) {

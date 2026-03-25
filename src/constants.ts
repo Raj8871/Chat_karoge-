@@ -1,0 +1,28 @@
+import { UISettings } from './types';
+
+export const DEFAULT_UI_SETTINGS: UISettings = {
+  theme: 'light',
+  chatBg: '#e5ddd5',
+  sentBubbleColor: '#dcf8c6',
+  receivedBubbleColor: '#ffffff',
+  sentTextColor: '#000000',
+  receivedTextColor: '#000000',
+  fontFamily: 'Inter',
+  fontSize: 14,
+  fontWeight: 'normal',
+  textColor: '#000000',
+  bubbleRadius: 8,
+  messageSpacing: 8,
+  messageWidth: 70,
+  lineHeight: 1.5,
+  inputBg: '#ffffff',
+  inputTextColor: '#000000',
+  inputRadius: 24,
+  inputHeight: 48,
+  appBg: '#f0f2f5',
+  sidebarColor: '#ffffff',
+  headerColor: '#f0f2f5',
+  loaderStyle: 'spinner',
+  animationSpeed: 0.3,
+  sendAnimation: true,
+};

@@ -6,15 +6,23 @@ import {
   CheckCircle2, XCircle, Clock, ChevronRight, HelpCircle, Info,
   Download, UserPlus, MessageSquare, Upload, Image as ImageIcon, Bot
 } from 'lucide-react';
-import { UserProfile, ConnectionRequest, Friend } from '../../types';
+import { UserProfile, ConnectionRequest, Friend, Chat, UISettings } from '../../types';
 import { db, logout } from '../../firebase';
 import { 
   collection, query, where, onSnapshot, doc, updateDoc, 
   deleteDoc, setDoc, serverTimestamp, Timestamp, getDocs,
-  orderBy, getDoc
+  orderBy, getDoc, addDoc, writeBatch
 } from 'firebase/firestore';
+import { 
+  ref, uploadBytesResumable, getDownloadURL, deleteObject 
+} from 'firebase/storage';
+import { storage } from '../../firebase';
 
 import { handleFirestoreError, OperationType } from '../../lib/firestore-errors';
+import { ChatUIControlPanel } from './ChatUIControlPanel';
+import { DEFAULT_UI_SETTINGS } from '../../constants';
+import { applyUISettings } from '../../lib/ui-utils';
+import { Palette as PaletteIcon } from 'lucide-react';
 
 interface RightSidebarProps {
   isOpen: boolean;
@@ -26,7 +34,7 @@ interface RightSidebarProps {
   activeChatId?: string;
 }
 
-type SidebarView = 'main' | 'profile' | 'friends' | 'requests' | 'docs' | 'settings' | 'more' | 'connect' | 'blocked';
+type SidebarView = 'main' | 'profile' | 'friends' | 'requests' | 'docs' | 'settings' | 'more' | 'connect' | 'blocked' | 'ui-control';
 
 export const RightSidebar: React.FC<RightSidebarProps> = ({ isOpen, onClose, currentUser, onLogout, onOpenImageGenerator, onSelectChat, activeChatId }) => {
   const [view, setView] = useState<SidebarView>('main');
@@ -37,6 +45,16 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ isOpen, onClose, cur
   const [blockedUsers, setBlockedUsers] = useState<UserProfile[]>([]);
   const [sharedDocs, setSharedDocs] = useState<any[]>([]);
   
+  // Document Sharing State
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
+  const [generatedCode, setGeneratedCode] = useState<string | null>(null);
+  const [accessCodeInput, setAccessCodeInput] = useState('');
+  const [docError, setDocError] = useState('');
+  const [docSuccess, setDocSuccess] = useState('');
+  const [myDocs, setMyDocs] = useState<any[]>([]);
+  const [accessedDocs, setAccessedDocs] = useState<any[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+
   // Profile Edit State
   const [editName, setEditName] = useState(currentUser.displayName);
   const [editBio, setEditBio] = useState(currentUser.bio);
@@ -185,6 +203,57 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ isOpen, onClose, cur
   }, [currentUser]);
 
   useEffect(() => {
+    if (!currentUser) return;
+
+    // Listen for my uploaded docs
+    const qMyDocs = query(
+      collection(db, 'sharedDocuments'),
+      where('ownerId', '==', currentUser.uid),
+      orderBy('uploadTime', 'desc')
+    );
+    const unsubMyDocs = onSnapshot(qMyDocs, (snapshot) => {
+      setMyDocs(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'sharedDocuments (my docs)');
+    });
+
+    // Listen for docs accessed via code
+    const qAccessed = query(
+      collection(db, 'userDocumentAccess'),
+      where('userId', '==', currentUser.uid),
+      orderBy('accessTime', 'desc')
+    );
+    const unsubAccessed = onSnapshot(qAccessed, async (snapshot) => {
+      const accessRecords = snapshot.docs.map(d => d.data());
+      const docIds = accessRecords.map(r => r.documentId);
+      
+      if (docIds.length > 0) {
+        // Fetch document details for each accessed doc
+        // Firestore 'in' query limit is 10, but let's assume it's fine for now or handle in chunks
+        const docsQuery = query(collection(db, 'sharedDocuments'), where('__name__', 'in', docIds));
+        const docsSnap = await getDocs(docsQuery);
+        const docsMap: Record<string, any> = {};
+        docsSnap.forEach(d => {
+          docsMap[d.id] = { id: d.id, ...d.data() };
+        });
+        
+        // Map back to maintain access order
+        const docs = accessRecords.map(r => docsMap[r.documentId]).filter(Boolean);
+        setAccessedDocs(docs);
+      } else {
+        setAccessedDocs([]);
+      }
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'userDocumentAccess');
+    });
+
+    return () => {
+      unsubMyDocs();
+      unsubAccessed();
+    };
+  }, [currentUser]);
+
+  useEffect(() => {
     if (!activeChatId) {
       setSharedDocs([]);
       return;
@@ -330,6 +399,146 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ isOpen, onClose, cur
     }
   };
 
+  const handleUploadDocument = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !currentUser) return;
+
+    // Validate file size (e.g., 10MB limit)
+    if (file.size > 10 * 1024 * 1024) {
+      setDocError('File is too large (max 10MB)');
+      return;
+    }
+
+    setIsUploading(true);
+    setUploadProgress(0);
+    setDocError('');
+    setDocSuccess('');
+
+    try {
+      const storageRef = ref(storage, `documents/${currentUser.uid}/${Date.now()}_${file.name}`);
+      const uploadTask = uploadBytesResumable(storageRef, file);
+
+      uploadTask.on('state_changed', 
+        (snapshot) => {
+          const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+          setUploadProgress(progress);
+        }, 
+        (error) => {
+          setDocError('Upload failed: ' + error.message);
+          setIsUploading(false);
+          setUploadProgress(null);
+        }, 
+        async () => {
+          const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+          const accessCode = await generateUniqueCode();
+          
+          await addDoc(collection(db, 'sharedDocuments'), {
+            ownerId: currentUser.uid,
+            fileURL: downloadURL,
+            accessCode: accessCode,
+            fileName: file.name,
+            fileSize: file.size,
+            mimeType: file.type,
+            uploadTime: serverTimestamp()
+          });
+
+          setDocSuccess('Document uploaded successfully!');
+          setGeneratedCode(accessCode);
+          setIsUploading(false);
+          setUploadProgress(null);
+        }
+      );
+    } catch (err) {
+      setDocError('Failed to upload document');
+      setIsUploading(false);
+    }
+  };
+
+  const handleAccessDocument = async () => {
+    if (!accessCodeInput.trim() || !currentUser) return;
+    setDocError('');
+    setDocSuccess('');
+
+    try {
+      const q = query(collection(db, 'sharedDocuments'), where('accessCode', '==', accessCodeInput.trim().toUpperCase()));
+      const snapshot = await getDocs(q);
+
+      if (snapshot.empty) {
+        setDocError('Invalid access code');
+        return;
+      }
+
+      const docData = snapshot.docs[0];
+      const docId = docData.id;
+
+      // Check if already has access
+      const accessId = `${currentUser.uid}_${docId}`;
+      const accessDoc = await getDoc(doc(db, 'userDocumentAccess', accessId));
+      
+      if (accessDoc.exists()) {
+        setDocError('You already have access to this document');
+        return;
+      }
+
+      await setDoc(doc(db, 'userDocumentAccess', accessId), {
+        userId: currentUser.uid,
+        documentId: docId,
+        accessTime: serverTimestamp()
+      });
+
+      setDocSuccess('Document added to your collection!');
+      setAccessCodeInput('');
+    } catch (err) {
+      setDocError('Failed to access document');
+    }
+  };
+
+  const handleDeleteDocument = async (docId: string, fileURL: string) => {
+    if (!window.confirm('Are you sure you want to delete this document? It will be removed for everyone.')) return;
+
+    try {
+      // 1. Delete from Storage
+      const storageRef = ref(storage, fileURL);
+      await deleteObject(storageRef);
+
+      // 2. Delete access records
+      const qAccess = query(collection(db, 'userDocumentAccess'), where('documentId', '==', docId));
+      const accessSnap = await getDocs(qAccess);
+      const batch = writeBatch(db);
+      accessSnap.forEach(d => batch.delete(d.ref));
+      await batch.commit();
+
+      // 3. Delete document metadata
+      await deleteDoc(doc(db, 'sharedDocuments', docId));
+
+      setDocSuccess('Document deleted successfully');
+    } catch (err) {
+      setDocError('Failed to delete document');
+    }
+  };
+
+  const generateUniqueCode = async () => {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let code = '';
+    let isUnique = false;
+    let attempts = 0;
+    while (!isUnique && attempts < 10) {
+      attempts++;
+      code = '';
+      for (let i = 0; i < 6; i++) {
+        code += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+      const fullCode = `DOC-${code}`;
+      const q = query(collection(db, 'sharedDocuments'), where('accessCode', '==', fullCode));
+      const snap = await getDocs(q);
+      if (snap.empty) {
+        isUnique = true;
+        return fullCode;
+      }
+    }
+    return `DOC-${code}`;
+  };
+
   const handleCopy = () => {
     navigator.clipboard.writeText(currentUser.uniqueId);
     setCopied(true);
@@ -342,8 +551,29 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ isOpen, onClose, cur
     setTimeout(() => setCopiedURL(false), 2000);
   };
 
+  const handleSaveUISettings = async (settings: UISettings) => {
+    try {
+      await updateDoc(doc(db, 'users', currentUser.uid), {
+        uiSettings: settings
+      });
+      applyUISettings(settings);
+      setView('settings');
+    } catch (err) {
+      handleFirestoreError(err, OperationType.UPDATE, `users/${currentUser.uid}`);
+    }
+  };
+
   const renderView = () => {
     switch (view) {
+      case 'ui-control':
+        return (
+          <div className="p-4">
+            <ChatUIControlPanel 
+              initialSettings={currentUser.uiSettings || DEFAULT_UI_SETTINGS} 
+              onSave={handleSaveUISettings} 
+            />
+          </div>
+        );
       case 'profile':
         return (
           <div className="p-6 space-y-6">
@@ -574,33 +804,155 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ isOpen, onClose, cur
         );
       case 'docs':
         return (
-          <div className="p-4 space-y-4">
-            <h3 className="font-bold text-gray-700 px-2 flex items-center gap-2">
-              <FileText size={18} className="text-[#00a884]" />
-              Shared Documents
-            </h3>
-            <div className="space-y-2">
-              {sharedDocs.map(doc => (
-                <div key={doc.id} className="p-3 bg-white rounded-xl border border-gray-100 shadow-sm flex items-center gap-3">
-                  <div className="w-10 h-10 bg-gray-50 rounded flex items-center justify-center text-[#00a884]">
-                    <FileText size={20} />
-                  </div>
-                  <div className="flex-1 overflow-hidden">
-                    <p className="text-sm font-bold truncate">{doc.document.name}</p>
-                    <p className="text-[10px] text-gray-400 uppercase">
-                      {(doc.document.size / 1024).toFixed(1)} KB • {doc.timestamp?.toDate().toLocaleDateString()}
-                    </p>
-                  </div>
-                  <a href={doc.document.url} download={doc.document.name} className="p-2 hover:bg-gray-100 rounded-full text-gray-400">
-                    <Download size={16} />
-                  </a>
+          <div className="p-4 space-y-6 overflow-y-auto max-h-full pb-20">
+            <div className="space-y-4">
+              <div className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm space-y-4">
+                <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Share New Document</h4>
+                <div className="flex flex-col gap-3">
+                  <button 
+                    onClick={() => document.getElementById('doc-upload')?.click()}
+                    disabled={isUploading}
+                    className="flex items-center justify-center gap-2 py-3 px-4 bg-[#00a884]/10 text-[#00a884] rounded-lg font-bold hover:bg-[#00a884]/20 transition-colors border-2 border-dashed border-[#00a884]/30"
+                  >
+                    <Upload size={18} />
+                    {isUploading ? 'Uploading...' : 'Upload Document'}
+                  </button>
+                  <input 
+                    type="file" 
+                    id="doc-upload" 
+                    className="hidden" 
+                    onChange={handleUploadDocument}
+                    accept=".pdf,.doc,.docx,.txt,.png,.jpg,.jpeg"
+                  />
+                  
+                  {uploadProgress !== null && (
+                    <div className="w-full bg-gray-100 rounded-full h-2 overflow-hidden">
+                      <motion.div 
+                        initial={{ width: 0 }}
+                        animate={{ width: `${uploadProgress}%` }}
+                        className="bg-[#00a884] h-full"
+                      />
+                    </div>
+                  )}
+
+                  {generatedCode && (
+                    <div className="bg-green-50 p-3 rounded-lg border border-green-100 flex items-center justify-between">
+                      <div className="flex flex-col">
+                        <span className="text-[10px] text-green-600 font-bold uppercase">Share this code</span>
+                        <code className="text-lg font-mono font-bold text-green-700">{generatedCode}</code>
+                      </div>
+                      <button 
+                        onClick={() => {
+                          navigator.clipboard.writeText(generatedCode);
+                          setDocSuccess('Code copied!');
+                          setTimeout(() => setDocSuccess(''), 2000);
+                        }}
+                        className="p-2 hover:bg-green-200/50 rounded-full text-green-600 transition-colors"
+                      >
+                        <Copy size={18} />
+                      </button>
+                    </div>
+                  )}
                 </div>
-              ))}
-              {sharedDocs.length === 0 && (
+              </div>
+
+              <div className="bg-white p-4 rounded-xl border border-gray-100 shadow-sm space-y-4">
+                <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider">Access with Code</h4>
+                <div className="flex gap-2">
+                  <input 
+                    type="text" 
+                    value={accessCodeInput}
+                    onChange={(e) => setAccessCodeInput(e.target.value.toUpperCase())}
+                    placeholder="DOC-XXXXXX"
+                    className="flex-1 p-3 bg-gray-50 border border-gray-100 rounded-lg outline-none focus:border-[#00a884] font-mono font-bold"
+                  />
+                  <button 
+                    onClick={handleAccessDocument}
+                    disabled={!accessCodeInput.trim()}
+                    className="px-4 bg-[#00a884] text-white rounded-lg font-bold hover:bg-[#008f6f] transition-colors disabled:opacity-50"
+                  >
+                    Access
+                  </button>
+                </div>
+              </div>
+
+              {docError && <p className="text-red-500 text-xs text-center font-medium bg-red-50 p-2 rounded-lg">{docError}</p>}
+              {docSuccess && <p className="text-green-500 text-xs text-center font-medium bg-green-50 p-2 rounded-lg">{docSuccess}</p>}
+            </div>
+
+            <div className="space-y-6">
+              {myDocs.length > 0 && (
+                <div className="space-y-3">
+                  <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider px-2">My Uploads</h4>
+                  <div className="space-y-2">
+                    {myDocs.map(doc => (
+                      <div key={doc.id} className="p-3 bg-white rounded-xl border border-gray-100 shadow-sm space-y-3">
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 bg-gray-50 rounded flex items-center justify-center text-[#00a884]">
+                            <FileText size={20} />
+                          </div>
+                          <div className="flex-1 overflow-hidden">
+                            <p className="text-sm font-bold truncate">{doc.fileName}</p>
+                            <p className="text-[10px] text-gray-400 uppercase">
+                              {(doc.fileSize / 1024).toFixed(1)} KB • {doc.uploadTime?.toDate().toLocaleDateString()}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-1">
+                            <a href={doc.fileURL} target="_blank" rel="noopener noreferrer" className="p-2 hover:bg-gray-100 rounded-full text-gray-400" title="Preview">
+                              <Info size={16} />
+                            </a>
+                            <a href={doc.fileURL} download={doc.fileName} className="p-2 hover:bg-gray-100 rounded-full text-gray-400" title="Download">
+                              <Download size={16} />
+                            </a>
+                            <button onClick={() => handleDeleteDocument(doc.id, doc.fileURL)} className="p-2 hover:bg-red-50 rounded-full text-red-400" title="Delete">
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between px-2 py-1 bg-gray-50 rounded-lg">
+                          <span className="text-[10px] font-bold text-gray-400 uppercase">Access Code</span>
+                          <code className="text-xs font-mono font-bold text-[#00a884]">{doc.accessCode}</code>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {accessedDocs.length > 0 && (
+                <div className="space-y-3">
+                  <h4 className="text-xs font-bold text-gray-400 uppercase tracking-wider px-2">Shared with Me</h4>
+                  <div className="space-y-2">
+                    {accessedDocs.map(doc => (
+                      <div key={doc.id} className="p-3 bg-white rounded-xl border border-gray-100 shadow-sm flex items-center gap-3">
+                        <div className="w-10 h-10 bg-gray-50 rounded flex items-center justify-center text-blue-500">
+                          <FileText size={20} />
+                        </div>
+                        <div className="flex-1 overflow-hidden">
+                          <p className="text-sm font-bold truncate">{doc.fileName}</p>
+                          <p className="text-[10px] text-gray-400 uppercase">
+                            {(doc.fileSize / 1024).toFixed(1)} KB • {doc.uploadTime?.toDate().toLocaleDateString()}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <a href={doc.fileURL} target="_blank" rel="noopener noreferrer" className="p-2 hover:bg-gray-100 rounded-full text-gray-400" title="Preview">
+                            <Info size={16} />
+                          </a>
+                          <a href={doc.fileURL} download={doc.fileName} className="p-2 hover:bg-gray-100 rounded-full text-gray-400" title="Download">
+                            <Download size={16} />
+                          </a>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {myDocs.length === 0 && accessedDocs.length === 0 && (
                 <div className="flex flex-col items-center justify-center py-12 text-center">
                   <FileText size={48} className="text-gray-200 mb-4" />
-                  <p className="text-gray-500 font-medium">No documents shared yet</p>
-                  <p className="text-xs text-gray-400 mt-2">Documents shared in this chat will appear here.</p>
+                  <p className="text-gray-500 font-medium">No documents yet</p>
+                  <p className="text-xs text-gray-400 mt-2">Upload a document or enter a code to get started.</p>
                 </div>
               )}
             </div>
@@ -609,6 +961,16 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ isOpen, onClose, cur
       case 'settings':
         return (
           <div className="p-4 space-y-2">
+            <button 
+              onClick={() => setView('ui-control')}
+              className="w-full flex items-center justify-between p-4 bg-white rounded-xl border border-gray-100 hover:bg-gray-50 transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <PaletteIcon size={18} className="text-[#00a884]" />
+                <span className="text-sm font-medium">Chat UI Control</span>
+              </div>
+              <ChevronRight size={16} className="text-gray-300" />
+            </button>
             <div className="flex items-center justify-between p-4 bg-white rounded-xl border border-gray-100">
               <span className="text-sm font-medium">Dark Mode</span>
               <div className="w-10 h-5 bg-gray-200 rounded-full relative">
@@ -749,16 +1111,18 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ isOpen, onClose, cur
             animate={{ x: 0 }}
             exit={{ x: '100%' }}
             transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-            className="fixed right-0 top-0 h-full w-full md:w-[400px] bg-[#f0f2f5] z-50 shadow-2xl flex flex-col"
+            className="fixed right-0 top-0 h-full w-full md:w-[400px] z-50 shadow-2xl flex flex-col"
+            style={{ backgroundColor: 'var(--sidebar-color)' }}
           >
-            <div className="bg-white p-4 flex items-center gap-4 border-b border-gray-200">
+            <div className="p-4 flex items-center gap-4 border-b" style={{ backgroundColor: 'var(--header-color)', borderColor: 'var(--sidebar-color)' }}>
               <button 
                 onClick={view === 'main' ? onClose : () => setView('main')} 
-                className="p-2 hover:bg-gray-100 rounded-full transition-colors"
+                className="p-2 hover:bg-black/5 rounded-full transition-colors"
+                style={{ color: 'var(--text-color)' }}
               >
                 <X size={20} />
               </button>
-              <h2 className="text-lg font-bold text-gray-800 capitalize">
+              <h2 className="text-lg font-bold capitalize" style={{ color: 'var(--text-color)' }}>
                 {view === 'main' ? 'Settings & Profile' : view.replace('-', ' ')}
               </h2>
             </div>
@@ -776,13 +1140,14 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ isOpen, onClose, cur
 const MenuItem: React.FC<{ icon: React.ReactNode; label: string; onClick: () => void; badge?: number }> = ({ icon, label, onClick, badge }) => (
   <button 
     onClick={onClick}
-    className="w-full flex items-center justify-between p-4 bg-white rounded-xl border border-gray-100 hover:bg-gray-50 transition-all group"
+    className="w-full flex items-center justify-between p-4 rounded-xl border hover:opacity-90 transition-all group"
+    style={{ backgroundColor: 'var(--header-color)', borderColor: 'var(--sidebar-color)', color: 'var(--text-color)' }}
   >
     <div className="flex items-center gap-4">
-      <div className="text-gray-400 group-hover:text-[#00a884] transition-colors">
+      <div className="opacity-50 group-hover:text-[#00a884] transition-colors">
         {icon}
       </div>
-      <span className="text-sm font-semibold text-gray-700">{label}</span>
+      <span className="text-sm font-semibold">{label}</span>
     </div>
     <div className="flex items-center gap-2">
       {badge && (
@@ -790,7 +1155,7 @@ const MenuItem: React.FC<{ icon: React.ReactNode; label: string; onClick: () => 
           {badge}
         </span>
       )}
-      <ChevronRight size={16} className="text-gray-300 group-hover:text-gray-400" />
+      <ChevronRight size={16} className="opacity-30 group-hover:opacity-50" />
     </div>
   </button>
 );

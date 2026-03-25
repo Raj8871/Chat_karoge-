@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Search, MoreVertical, LogOut, User, X, Check, Copy, MessageSquare, Bot } from 'lucide-react';
+import { Search, MoreVertical, LogOut, User, X, Check, Copy, MessageSquare, Bot, Lock, Unlock, ArrowLeft } from 'lucide-react';
 import { UserProfile, Chat, Friend } from '../../types';
 import { db, logout } from '../../firebase';
 import { collection, query, where, onSnapshot, getDocs, doc, setDoc, updateDoc, deleteDoc, Timestamp, getDoc } from 'firebase/firestore';
@@ -19,6 +19,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentUser, onSelectChat, onL
   const [friendProfiles, setFriendProfiles] = useState<Record<string, UserProfile>>({});
   const [chats, setChats] = useState<Record<string, Chat>>({});
   const [search, setSearch] = useState('');
+  const [showLockedChats, setShowLockedChats] = useState(false);
+  const [isLockedChatsUnlocked, setIsLockedChatsUnlocked] = useState(false);
+  const [pinInput, setPinInput] = useState('');
+  const [pinError, setPinError] = useState(false);
 
   useEffect(() => {
     // Listen for friends
@@ -69,8 +73,30 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentUser, onSelectChat, onL
     const otherUid = f.uids.find(uid => uid !== currentUser.uid);
     const profile = friendProfiles[otherUid || ''];
     if (!profile) return false;
-    return profile.displayName.toLowerCase().includes(search.toLowerCase()) || 
-           profile.uniqueId.toLowerCase().includes(search.toLowerCase());
+
+    // Filter by search
+    const matchesSearch = profile.displayName.toLowerCase().includes(search.toLowerCase()) || 
+                         profile.uniqueId.toLowerCase().includes(search.toLowerCase());
+    if (!matchesSearch) return false;
+
+    // Filter out locked chats (unless we are in locked chats view)
+    const chat = chats[f.id];
+    if (chat?.lockedBy?.includes(currentUser.uid) && !showLockedChats) return false;
+    if (!chat?.lockedBy?.includes(currentUser.uid) && showLockedChats) return false;
+
+    // Filter out deleted chats (unless there's a new message OR searching)
+    if (!search && chat?.deletedAt?.[currentUser.uid]) {
+      const deletedAt = chat.deletedAt[currentUser.uid];
+      const updatedAt = chat.updatedAt;
+      
+      const deletedAtMillis = deletedAt instanceof Timestamp ? deletedAt.toMillis() : 0;
+      const updatedAtMillis = updatedAt instanceof Timestamp ? updatedAt.toMillis() : 0;
+
+      // If deletedAt is more recent than updatedAt, hide it from the main list
+      if (deletedAtMillis >= updatedAtMillis) return false;
+    }
+
+    return true;
   }).sort((a, b) => {
     const chatA = chats[a.id];
     const chatB = chats[b.id];
@@ -79,11 +105,41 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentUser, onSelectChat, onL
     return timeB - timeA;
   });
 
+  const lockedChatsCount = friends.filter(f => chats[f.id]?.lockedBy?.includes(currentUser.uid)).length;
+
+  const handleUnlockLockedChats = () => {
+    // Simple verification using uniqueId as PIN for now
+    if (pinInput.toUpperCase() === currentUser.uniqueId.toUpperCase()) {
+      setIsLockedChatsUnlocked(true);
+      setPinError(false);
+    } else {
+      setPinError(true);
+      setTimeout(() => setPinError(false), 2000);
+    }
+  };
+
   return (
-    <div className="w-full md:w-[400px] h-full bg-white border-r border-gray-200 flex flex-col relative">
+    <div className="w-full md:w-[400px] h-full border-r flex flex-col relative" style={{ backgroundColor: 'var(--sidebar-color)', borderColor: 'var(--sidebar-color)' }}>
       {/* Header */}
-      <div className="bg-[#f0f2f5] p-3 flex items-center justify-between sticky top-0 z-10">
-        <h1 className="text-xl font-bold text-gray-800 px-2">Chats</h1>
+      <div className="p-3 flex items-center justify-between sticky top-0 z-10" style={{ backgroundColor: 'var(--header-color)' }}>
+        <div className="flex items-center gap-2">
+          {showLockedChats && (
+            <button 
+              onClick={() => {
+                setShowLockedChats(false);
+                setIsLockedChatsUnlocked(false);
+                setPinInput('');
+              }}
+              className="p-1 hover:bg-black/5 rounded-full transition-colors"
+              style={{ color: 'var(--text-color)' }}
+            >
+              <ArrowLeft size={20} />
+            </button>
+          )}
+          <h1 className="text-xl font-bold px-2" style={{ color: 'var(--text-color)' }}>
+            {showLockedChats ? 'Locked Chats' : 'Chats'}
+          </h1>
+        </div>
         
         <button 
           onClick={onOpenProfile}
@@ -98,39 +154,96 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentUser, onSelectChat, onL
       </div>
 
       {/* Search */}
-      <div className="p-2 bg-white">
-        <div className="bg-[#f0f2f5] rounded-lg flex items-center px-4 py-2 gap-4">
-          <Search size={18} className="text-gray-500" />
-          <input 
-            type="text" 
-            placeholder="Search or start new chat"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="bg-transparent border-none outline-none text-sm w-full"
-          />
+      {!showLockedChats && (
+        <div className="p-2" style={{ backgroundColor: 'var(--sidebar-color)' }}>
+          <div className="rounded-lg flex items-center px-4 py-2 gap-4" style={{ backgroundColor: 'var(--header-color)' }}>
+            <Search size={18} className="opacity-50" style={{ color: 'var(--text-color)' }} />
+            <input 
+              type="text" 
+              placeholder="Search or start new chat"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="bg-transparent border-none outline-none text-sm w-full"
+              style={{ color: 'var(--text-color)' }}
+            />
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Chat List */}
       <div className="flex-1 overflow-y-auto">
-        {/* Garud AI Entry */}
-        <div 
-          onClick={onOpenAIChat}
-          className="flex items-center p-3 gap-3 hover:bg-[#f5f6f6] cursor-pointer transition-colors border-b border-gray-50 bg-[#f0f2f5]/30"
-        >
-          <div className="w-12 h-12 bg-[#00a884] rounded-full flex items-center justify-center text-white shadow-sm">
-            <Bot size={28} />
-          </div>
-          <div className="flex-1 overflow-hidden">
-            <div className="flex items-center justify-between">
-              <span className="font-bold text-[#00a884] truncate">Garud AI</span>
-              <span className="text-[10px] bg-[#00a884]/10 text-[#00a884] px-1.5 py-0.5 rounded font-bold uppercase">AI</span>
+        {showLockedChats && !isLockedChatsUnlocked ? (
+          <div className="flex flex-col items-center justify-center p-8 h-full text-center">
+            <div className="w-16 h-16 bg-purple-100 dark:bg-purple-900/30 text-purple-500 rounded-full flex items-center justify-center mb-6">
+              <Lock size={32} />
             </div>
-            <p className="text-sm text-gray-500 truncate italic">Ask me anything or generate images...</p>
+            <h2 className="text-lg font-bold mb-2" style={{ color: 'var(--text-color)' }}>Locked Chats</h2>
+            <p className="text-sm opacity-60 mb-6" style={{ color: 'var(--text-color)' }}>Enter your Unique ID to unlock</p>
+            
+            <div className={`flex flex-col gap-3 w-full max-w-[240px] transition-transform ${pinError ? 'animate-shake' : ''}`}>
+              <input 
+                type="text"
+                placeholder="Enter Unique ID"
+                value={pinInput}
+                onChange={(e) => setPinInput(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleUnlockLockedChats()}
+                className="w-full px-4 py-3 rounded-xl border bg-transparent text-center font-mono tracking-widest outline-none focus:border-purple-500 transition-colors"
+                style={{ color: 'var(--text-color)', borderColor: 'var(--sidebar-color)' }}
+              />
+              <button 
+                onClick={handleUnlockLockedChats}
+                className="w-full py-3 bg-purple-600 text-white rounded-xl font-bold hover:bg-purple-700 transition-colors shadow-lg shadow-purple-500/20"
+              >
+                Unlock
+              </button>
+              {pinError && <p className="text-xs text-red-500 mt-1">Invalid Unique ID</p>}
+            </div>
           </div>
-        </div>
+        ) : (
+          <>
+            {/* Locked Chats Entry */}
+            {!showLockedChats && lockedChatsCount > 0 && (
+              <div 
+                onClick={() => setShowLockedChats(true)}
+                className="flex items-center p-4 gap-4 cursor-pointer hover:bg-black/5 border-b transition-colors group"
+                style={{ borderColor: 'var(--sidebar-color)' }}
+              >
+                <div className="w-12 h-12 bg-purple-100 dark:bg-purple-900/30 rounded-full flex items-center justify-center text-purple-500 group-hover:scale-110 transition-transform">
+                  <Lock size={24} />
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold" style={{ color: 'var(--text-color)' }}>Locked Chats</span>
+                    <span className="bg-purple-500 text-white text-[10px] px-2 py-0.5 rounded-full font-bold">
+                      {lockedChatsCount}
+                    </span>
+                  </div>
+                  <p className="text-sm opacity-60" style={{ color: 'var(--text-color)' }}>Locked and hidden chats</p>
+                </div>
+              </div>
+            )}
 
-        {filteredFriends.map(friend => {
+            {/* Garud AI Entry */}
+            {!showLockedChats && (
+              <div 
+                onClick={onOpenAIChat}
+                className="flex items-center p-3 gap-3 cursor-pointer transition-colors border-b opacity-90"
+                style={{ backgroundColor: 'var(--header-color)', borderColor: 'var(--sidebar-color)' }}
+              >
+                <div className="w-12 h-12 bg-[#00a884] rounded-full flex items-center justify-center text-white shadow-sm">
+                  <Bot size={28} />
+                </div>
+                <div className="flex-1 overflow-hidden">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-[#00a884] truncate">Garud AI</span>
+                    <span className="text-[10px] bg-[#00a884]/10 text-[#00a884] px-1.5 py-0.5 rounded font-bold uppercase">AI</span>
+                  </div>
+                  <p className="text-sm opacity-60 truncate italic" style={{ color: 'var(--text-color)' }}>Ask me anything or generate images...</p>
+                </div>
+              </div>
+            )}
+
+            {filteredFriends.map(friend => {
           const otherUid = friend.uids.find(uid => uid !== currentUser.uid);
           const otherUser = friendProfiles[otherUid || ''];
           if (!otherUser) return null;
@@ -149,7 +262,8 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentUser, onSelectChat, onL
                 participantIds: [], // Will be populated if needed
                 updatedAt: Timestamp.now()
               }, otherUser)}
-              className="flex items-center p-3 gap-3 hover:bg-[#f5f6f6] cursor-pointer transition-colors border-b border-gray-50"
+              className="flex items-center p-3 gap-3 cursor-pointer transition-colors border-b"
+              style={{ borderColor: 'var(--sidebar-color)', color: 'var(--text-color)' }}
             >
               <div className="w-12 h-12 bg-gray-300 rounded-full overflow-hidden relative">
                 <img src={otherUser.photoURL} alt="Avatar" className="w-full h-full object-cover" />
@@ -160,23 +274,25 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentUser, onSelectChat, onL
               
               <div className="flex-1 overflow-hidden">
                 <div className="flex items-center justify-between">
-                  <span className="font-semibold text-gray-800 truncate">{otherUser.displayName}</span>
-                  <span className="text-xs text-gray-400">
+                  <span className="font-semibold truncate">{otherUser.displayName}</span>
+                  <span className="text-xs opacity-40">
                     {updatedAt instanceof Timestamp 
                       ? updatedAt.toDate().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) 
                       : ''}
                   </span>
                 </div>
-                <p className="text-sm text-gray-500 truncate">{lastMessage || 'No messages yet. Start chatting!'}</p>
+                <p className="text-sm opacity-60 truncate">{lastMessage || 'No messages yet. Start chatting!'}</p>
               </div>
             </div>
           );
         })}
         {friends.length === 0 && (
-          <div className="flex flex-col items-center justify-center p-8 text-center text-gray-400">
-            <MessageSquare size={48} className="mb-4 opacity-20" />
+          <div className="flex flex-col items-center justify-center p-8 text-center opacity-20" style={{ color: 'var(--text-color)' }}>
+            <MessageSquare size={48} className="mb-4" />
             <p className="text-sm">No chats yet. Add a friend using their unique ID to start chatting!</p>
           </div>
+        )}
+          </>
         )}
       </div>
 

@@ -9,6 +9,34 @@ export interface UserProfile {
   status: 'online' | 'offline';
   lastSeen: Timestamp | string;
   isTyping?: boolean;
+  uiSettings?: UISettings;
+}
+
+export interface UISettings {
+  theme: 'light' | 'dark';
+  chatBg: string;
+  sentBubbleColor: string;
+  receivedBubbleColor: string;
+  sentTextColor: string;
+  receivedTextColor: string;
+  fontFamily: string;
+  fontSize: number;
+  fontWeight: 'normal' | 'bold';
+  textColor: string;
+  bubbleRadius: number;
+  messageSpacing: number;
+  messageWidth: number;
+  lineHeight: number;
+  inputBg: string;
+  inputTextColor: string;
+  inputRadius: number;
+  inputHeight: number;
+  appBg: string;
+  sidebarColor: string;
+  headerColor: string;
+  loaderStyle: 'spinner' | 'dots' | 'pulse';
+  animationSpeed: number;
+  sendAnimation: boolean;
 }
 
 export interface Chat {
@@ -19,6 +47,7 @@ export interface Chat {
   lastTimestamp?: Timestamp;
   updatedAt: Timestamp;
   deletedAt?: Record<string, Timestamp>;
+  lockedBy?: string[];
 }
 
 export interface Message {
@@ -27,8 +56,10 @@ export interface Message {
   from: string;
   to: string;
   text?: string;
-  type: 'text' | 'image' | 'document';
+  type: 'text' | 'image' | 'document' | 'video' | 'audio';
   image?: string;
+  video?: string;
+  audio?: string;
   document?: {
     url: string;
     name: string;
@@ -38,6 +69,8 @@ export interface Message {
   replyTo?: Message;
   timestamp: Timestamp | string;
   status?: 'sent' | 'delivered' | 'read';
+  deletedFor?: string[];
+  isDeleted?: boolean;
 }
 
 export interface Block {
@@ -61,4 +94,12 @@ export interface Friend {
   id: string;
   uids: string[];
   timestamp: Timestamp;
+}
+
+export interface CallSession {
+  callerId: string;
+  receiverId: string;
+  callerName: string;
+  status: 'idle' | 'calling' | 'incoming' | 'active' | 'ended';
+  startTime?: number;
 }

@@ -1,5 +1,5 @@
 {
   "name": "WhatsApp Clone",
   "description": "A full-featured real-time chat application with unique IDs, profile management, and advanced chat features.",
-  "requestFramePermissions": []
+  "requestFramePermissions": ["microphone", "camera"]
 }
